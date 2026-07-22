@@ -21,6 +21,10 @@ UPDATES_FILE = ROOT / ".migration" / "updates.json"
 DECKS_DIR = ROOT / "baralhos"
 MANIFEST_FILE = DECKS_DIR / "manifest.csv"
 RAW_BASE = "https://raw.githubusercontent.com/estathidev/baralhos/main/"
+REPOSITORY_URL_PREFIXES = (
+    "https://raw.githubusercontent.com/estathidev/baralhos/",
+    "https://github.com/estathidev/baralhos/raw/",
+)
 USER_AGENT = "estathidev-baralhos-migration/1.0"
 CONTENT_TYPE_EXTENSIONS = {
     "image/jpeg": ".jpg",
@@ -94,6 +98,7 @@ def load_records() -> list[dict[str, str]]:
         cell_name = str(cell["a1"])
         current_url = cell_url(cell)
         previous = existing.get(cell_name)
+        already_in_repository = current_url.startswith(REPOSITORY_URL_PREFIXES)
         already_migrated = bool(
             previous and current_url == previous["repository_url"]
         )
@@ -119,6 +124,7 @@ def load_records() -> list[dict[str, str]]:
             "path": relative_posix,
             "repository_url": repository_url,
             "current_url": current_url,
+            "skip_update": "true" if already_in_repository else "false",
         }
         if already_migrated and (ROOT / relative_posix).is_file():
             record["cached_bytes"] = previous["bytes"]
@@ -233,7 +239,8 @@ def main() -> int:
                 "value": record["repository_url"],
             }
             for record in records
-            if record["current_url"] != record["repository_url"]
+            if record["skip_update"] != "true"
+            and record["current_url"] != record["repository_url"]
         ]
     }
     UPDATES_FILE.write_text(
