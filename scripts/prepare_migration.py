@@ -20,6 +20,7 @@ EXPORT_FILE = ROOT / ".migration" / "oraculares.json"
 UPDATES_FILE = ROOT / ".migration" / "updates.json"
 DECKS_DIR = ROOT / "baralhos"
 MANIFEST_FILE = DECKS_DIR / "manifest.csv"
+CARD_NAMES_FILE = ROOT / "data" / "card_names.json"
 RAW_BASE = "https://raw.githubusercontent.com/estathidev/baralhos/main/"
 REPOSITORY_URL_PREFIXES = (
     "https://raw.githubusercontent.com/estathidev/baralhos/",
@@ -51,6 +52,35 @@ def filename_from_url(url: str, cell: str) -> str:
     if not Path(filename).suffix:
         filename += ".img"
     return filename
+
+
+def load_card_names() -> dict[str, list[str]]:
+    if not CARD_NAMES_FILE.exists():
+        return {}
+    return json.loads(CARD_NAMES_FILE.read_text(encoding="utf-8"))
+
+
+def card_name_and_filename(
+    deck: str,
+    index: int,
+    source_url: str,
+    cell: str,
+    catalogs: dict[str, list[str]],
+) -> tuple[str, str]:
+    original_filename = filename_from_url(source_url, cell)
+    catalog = catalogs.get(deck)
+    if catalog:
+        if index > len(catalog):
+            raise ValueError(
+                f"Catálogo de {deck} não possui o item {index} ({cell})."
+            )
+        card_name = catalog[index - 1]
+    else:
+        stem = Path(original_filename).stem
+        stem = re.sub(r"^[0-9]+[-_ ]*", "", stem)
+        card_name = re.sub(r"[-_]+", " ", stem).strip()
+    suffix = Path(original_filename).suffix.lower()
+    return card_name, f"{index:02d}-{slugify(card_name)}{suffix}"
 
 
 def cell_url(cell: dict[str, object]) -> str:
@@ -95,9 +125,11 @@ def load_records() -> list[dict[str, str]]:
         if int(cell["row"]) == 1 and int(cell["column"]) >= first_column
     }
     existing = load_existing_manifest()
+    catalogs = load_card_names()
 
     records: list[dict[str, str]] = []
     seen_paths: set[str] = set()
+    deck_indexes: dict[str, int] = {}
     for cell in cells:
         row = int(cell["row"])
         column = int(cell["column"])
@@ -106,6 +138,8 @@ def load_records() -> list[dict[str, str]]:
         deck = headers.get(column)
         if not deck:
             raise ValueError(f"Nome do baralho ausente na coluna {column}.")
+        deck_indexes[deck] = deck_indexes.get(deck, 0) + 1
+        card_index = deck_indexes[deck]
         cell_name = str(cell["a1"])
         current_url = cell_url(cell)
         fallback_url = fallback_cell_url(cell, current_url)
@@ -119,9 +153,12 @@ def load_records() -> list[dict[str, str]]:
             source_url = previous["source_url"]
             relative_posix = previous["path"]
             repository_url = previous["repository_url"]
+            card_name = previous.get("card_name") or Path(relative_posix).stem
         else:
             source_url = current_url
-            filename = filename_from_url(source_url, cell_name)
+            card_name, filename = card_name_and_filename(
+                deck, card_index, source_url, cell_name, catalogs
+            )
             relative_path = Path("baralhos") / slugify(deck) / filename
             relative_posix = relative_path.as_posix()
             repository_url = RAW_BASE + urllib.parse.quote(relative_posix)
@@ -132,6 +169,7 @@ def load_records() -> list[dict[str, str]]:
         record = {
             "cell": cell_name,
             "deck": deck,
+            "card_name": card_name,
             "source_url": source_url,
             "path": relative_posix,
             "repository_url": repository_url,
@@ -232,6 +270,7 @@ def main() -> int:
         fieldnames = [
             "cell",
             "deck",
+            "card_name",
             "path",
             "bytes",
             "content_type",
@@ -246,6 +285,7 @@ def main() -> int:
                 {
                     "cell": record["cell"],
                     "deck": record["deck"],
+                    "card_name": record["card_name"],
                     "path": record["path"],
                     "bytes": size,
                     "content_type": content_type,
