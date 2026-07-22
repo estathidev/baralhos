@@ -63,6 +63,17 @@ def cell_url(cell: dict[str, object]) -> str:
     raise ValueError(f"A célula {cell.get('a1')} não contém uma URL HTTP.")
 
 
+def fallback_cell_url(cell: dict[str, object], primary: str) -> str:
+    display = cell.get("display")
+    if (
+        isinstance(display, str)
+        and display.startswith(("https://", "http://"))
+        and display != primary
+    ):
+        return display
+    return ""
+
+
 def load_existing_manifest() -> dict[str, dict[str, str]]:
     if not MANIFEST_FILE.exists():
         return {}
@@ -97,6 +108,7 @@ def load_records() -> list[dict[str, str]]:
             raise ValueError(f"Nome do baralho ausente na coluna {column}.")
         cell_name = str(cell["a1"])
         current_url = cell_url(cell)
+        fallback_url = fallback_cell_url(cell, current_url)
         previous = existing.get(cell_name)
         already_in_repository = current_url.startswith(REPOSITORY_URL_PREFIXES)
         already_migrated = bool(
@@ -124,6 +136,7 @@ def load_records() -> list[dict[str, str]]:
             "path": relative_posix,
             "repository_url": repository_url,
             "current_url": current_url,
+            "fallback_url": fallback_url,
             "skip_update": "true" if already_in_repository else "false",
         }
         if already_migrated and (ROOT / relative_posix).is_file():
@@ -134,17 +147,27 @@ def load_records() -> list[dict[str, str]]:
 
 
 def download(record: dict[str, str]) -> tuple[dict[str, str], int, str]:
-    request = urllib.request.Request(
-        record["source_url"],
-        headers={"User-Agent": USER_AGENT, "Accept": "image/*"},
-    )
-    with urllib.request.urlopen(request, timeout=45) as response:
-        content_type = response.headers.get_content_type().lower()
-        if not content_type.startswith("image/"):
-            raise ValueError(
-                f"{record['cell']}: conteúdo inesperado {content_type}"
+    candidates = [record["source_url"]]
+    if record.get("fallback_url"):
+        candidates.append(record["fallback_url"])
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            request = urllib.request.Request(
+                candidate,
+                headers={"User-Agent": USER_AGENT, "Accept": "image/*"},
             )
-        content = response.read()
+            with urllib.request.urlopen(request, timeout=45) as response:
+                content_type = response.headers.get_content_type().lower()
+                if not content_type.startswith("image/"):
+                    raise ValueError(f"conteúdo inesperado {content_type}")
+                content = response.read()
+            record["source_url"] = candidate
+            break
+        except Exception as error:  # noqa: BLE001 - tenta a URL visível da célula
+            last_error = error
+    else:
+        raise ValueError(f"nenhuma URL funcionou: {last_error}")
     if len(content) < 100:
         raise ValueError(f"{record['cell']}: imagem vazia ou inválida")
 
@@ -215,7 +238,7 @@ def main() -> int:
             "source_url",
             "repository_url",
         ]
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         for record in records:
             size, content_type = results[record["cell"]]
