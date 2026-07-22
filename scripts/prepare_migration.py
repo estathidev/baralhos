@@ -59,6 +59,13 @@ def cell_url(cell: dict[str, object]) -> str:
     raise ValueError(f"A célula {cell.get('a1')} não contém uma URL HTTP.")
 
 
+def load_existing_manifest() -> dict[str, dict[str, str]]:
+    if not MANIFEST_FILE.exists():
+        return {}
+    with MANIFEST_FILE.open(encoding="utf-8", newline="") as handle:
+        return {row["cell"]: row for row in csv.DictReader(handle)}
+
+
 def load_records() -> list[dict[str, str]]:
     payload = json.loads(EXPORT_FILE.read_text(encoding="utf-8"))
     if not payload.get("ok"):
@@ -72,6 +79,7 @@ def load_records() -> list[dict[str, str]]:
         for cell in cells
         if int(cell["row"]) == 1 and int(cell["column"]) >= first_column
     }
+    existing = load_existing_manifest()
 
     records: list[dict[str, str]] = []
     seen_paths: set[str] = set()
@@ -83,22 +91,39 @@ def load_records() -> list[dict[str, str]]:
         deck = headers.get(column)
         if not deck:
             raise ValueError(f"Nome do baralho ausente na coluna {column}.")
-        source_url = cell_url(cell)
-        filename = filename_from_url(source_url, str(cell["a1"]))
-        relative_path = Path("baralhos") / slugify(deck) / filename
-        relative_posix = relative_path.as_posix()
+        cell_name = str(cell["a1"])
+        current_url = cell_url(cell)
+        previous = existing.get(cell_name)
+        already_migrated = bool(
+            previous and current_url == previous["repository_url"]
+        )
+
+        if already_migrated:
+            source_url = previous["source_url"]
+            relative_posix = previous["path"]
+            repository_url = previous["repository_url"]
+        else:
+            source_url = current_url
+            filename = filename_from_url(source_url, cell_name)
+            relative_path = Path("baralhos") / slugify(deck) / filename
+            relative_posix = relative_path.as_posix()
+            repository_url = RAW_BASE + urllib.parse.quote(relative_posix)
+
         if relative_posix in seen_paths:
             raise ValueError(f"Nome de arquivo duplicado: {relative_posix}")
         seen_paths.add(relative_posix)
-        records.append(
-            {
-                "cell": str(cell["a1"]),
-                "deck": deck,
-                "source_url": source_url,
-                "path": relative_posix,
-                "repository_url": RAW_BASE + urllib.parse.quote(relative_posix),
-            }
-        )
+        record = {
+            "cell": cell_name,
+            "deck": deck,
+            "source_url": source_url,
+            "path": relative_posix,
+            "repository_url": repository_url,
+            "current_url": current_url,
+        }
+        if already_migrated and (ROOT / relative_posix).is_file():
+            record["cached_bytes"] = previous["bytes"]
+            record["cached_content_type"] = previous["content_type"]
+        records.append(record)
     return records
 
 
@@ -139,10 +164,21 @@ def main() -> int:
         return 1
 
     records = load_records()
-    results: dict[str, tuple[int, str]] = {}
+    results: dict[str, tuple[int, str]] = {
+        record["cell"]: (
+            int(record["cached_bytes"]),
+            record["cached_content_type"],
+        )
+        for record in records
+        if "cached_bytes" in record
+    }
     errors: list[str] = []
     with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(download, record): record for record in records}
+        futures = {
+            executor.submit(download, record): record
+            for record in records
+            if "cached_bytes" not in record
+        }
         for future in as_completed(futures):
             record = futures[future]
             try:
@@ -179,9 +215,13 @@ def main() -> int:
             size, content_type = results[record["cell"]]
             writer.writerow(
                 {
-                    **record,
+                    "cell": record["cell"],
+                    "deck": record["deck"],
+                    "path": record["path"],
                     "bytes": size,
                     "content_type": content_type,
+                    "source_url": record["source_url"],
+                    "repository_url": record["repository_url"],
                 }
             )
 
@@ -189,10 +229,11 @@ def main() -> int:
         "updates": [
             {
                 "a1": record["cell"],
-                "expected": record["source_url"],
+                "expected": record["current_url"],
                 "value": record["repository_url"],
             }
             for record in records
+            if record["current_url"] != record["repository_url"]
         ]
     }
     UPDATES_FILE.write_text(
@@ -202,6 +243,7 @@ def main() -> int:
 
     total_bytes = sum(size for size, _ in results.values())
     print(f"Imagens preparadas: {len(records)} ({total_bytes} bytes)")
+    print(f"Células a atualizar: {len(updates['updates'])}")
     print(f"Manifesto: {MANIFEST_FILE.relative_to(ROOT)}")
     print(f"Atualizações: {UPDATES_FILE.relative_to(ROOT)}")
     return 0

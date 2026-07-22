@@ -9,7 +9,7 @@ const CONFIG = Object.freeze({
   spreadsheetId: '177FRZ59ZJNFPlpVHddWMklNYHde4X7Pg2Ae-WKK4zyA',
   sheetName: 'Oraculares',
   firstImageRow: 5,
-  firstDeckColumn: 6,
+  firstDeckColumn: 2,
   maxUpdatesPerRequest: 2000,
   allowedUrlPrefixes: [
     'https://raw.githubusercontent.com/estathidev/baralhos/',
@@ -235,4 +235,3 @@ function ApiError_(message) {
 }
 ApiError_.prototype = Object.create(Error.prototype);
 ApiError_.prototype.constructor = ApiError_;
-

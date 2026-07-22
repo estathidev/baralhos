@@ -1,7 +1,8 @@
 # API do Google Apps Script
 
 Esta API temporária permite ler a aba `Oraculares` e substituir links somente na
-área de imagens (`F5` em diante). Novos valores são limitados às URLs públicas do
+área de imagens (`B5` em diante). Todas as colunas preenchidas são descobertas
+automaticamente, inclusive novos baralhos adicionados no futuro. Novos valores são limitados às URLs públicas do
 repositório `estathidev/baralhos`.
 
 ## Instalação na planilha
@@ -25,4 +26,3 @@ adicione o token a este repositório.
 Depois que a migração for confirmada, execute manualmente `revokeApiToken` e
 arquive ou exclua a implantação. Assim, a URL deixa de permitir acesso à
 planilha mesmo que o token temporário tenha sido exposto.
-
